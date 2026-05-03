@@ -52,7 +52,6 @@ load_config() {
     [[ "$CHOSEN_DE" =~ ^[a-z0-9_-]+$ ]] || die "Invalid DE name: $CHOSEN_DE"
 
     # Session environment
-    export PULSE_SERVER=127.0.0.1
     export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR}}"
     export DISPLAY="${DISPLAY_NUM}"
 

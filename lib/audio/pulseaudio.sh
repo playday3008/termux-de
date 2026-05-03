@@ -4,38 +4,28 @@
 _PA_OWNED=false
 
 audio_start() {
-    local uid
-    uid=$(id -u)
+    local pa_socket="${XDG_RUNTIME_DIR}/pulse/native"
 
-    local pa_pid
-    pa_pid=$(pgrep -x -U "$uid" pulseaudio 2>/dev/null | head -1 || true)
-
-    if [[ -n "$pa_pid" ]]; then
-        # PA running — check if TCP module loaded
-        if pactl list modules short 2>/dev/null | grep -q module-native-protocol-tcp; then
-            log_info "PulseAudio running with TCP — attaching"
+    if pulseaudio --check 2>/dev/null; then
+        if [[ -S "$pa_socket" ]]; then
+            log_info "PulseAudio already running — attaching"
             _PA_OWNED=false
             return 0
         fi
-        # Load TCP module into running instance
-        log_info "PulseAudio running — loading TCP module"
-        pactl load-module module-native-protocol-tcp auth-anonymous=1 >/dev/null 2>&1 \
-            || log_warn "Failed to load PulseAudio TCP module"
-        _PA_OWNED=false
-        return 0
+        # PA running but socket not at expected path — restart with correct XDG_RUNTIME_DIR
+        log_warn "PulseAudio running but socket missing at ${pa_socket} — restarting"
+        pulseaudio --kill 2>/dev/null || true
+        sleep 0.3
     fi
 
-    # Start fresh PA
     log_info "Starting PulseAudio"
-    pulseaudio --start \
-        --load="module-native-protocol-tcp auth-anonymous=1" \
-        --exit-idle-time=-1 \
-        2>/dev/null \
+    pulseaudio --start --exit-idle-time=-1 2>/dev/null \
         || die "Failed to start PulseAudio"
 
     _PA_OWNED=true
 
-    # Record PID
+    local uid pa_pid
+    uid=$(id -u)
     pa_pid=$(pgrep -x -U "$uid" pulseaudio 2>/dev/null | head -1 || true)
     if [[ -n "$pa_pid" ]]; then
         # shellcheck disable=SC2154
