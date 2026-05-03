@@ -65,6 +65,18 @@ preflight_check() {
         esac
     fi
 
+    # Lavapipe ICD required for virpipe — Qt6 needs a working Vulkan instance
+    if [[ "${GPU_DRIVER_NAME:-}" == "virpipe" ]]; then
+        local lvp_icds=("${PREFIX}/share/vulkan/icd.d"/lvp_icd.*.json)
+        if [[ ! -f "${lvp_icds[0]}" ]]; then
+            log_error "Lavapipe Vulkan ICD not found (required for software rendering)"
+            printf '  Qt6/KDE needs a Vulkan instance even in software mode.\n' >&2
+            printf '\n  Install with:\n' >&2
+            printf '    pkg install mesa-vulkan-icd-swrast\n\n' >&2
+            exit 1
+        fi
+    fi
+
     [[ "${DE_HAS_COMPOSITOR:-true}" == "false" ]] && required+=(picom)
 
     local -a missing=()
