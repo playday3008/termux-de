@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Termux environment guard
+[[ -z "${PREFIX:-}" ]] && { printf 'ERROR: Not running in Termux (PREFIX not set)\n' >&2; exit 1; }
+: "${TMPDIR:=${PREFIX}/tmp}"
+
+# Pre-module globals
+COMMAND=""
+CHOSEN_DE=""
+GPU_DRIVER=""
+DAEMONIZE=false
+DRY_RUN=false
+LOGS_TAIL=false
+_SHUTDOWN_DONE=false
+
+# Source core modules (order matters)
+# shellcheck source=lib/core/log.sh
+source "${SCRIPT_DIR}/lib/core/log.sh"
+# shellcheck source=lib/core/config.sh
+source "${SCRIPT_DIR}/lib/core/config.sh"
+# shellcheck source=lib/core/process.sh
+source "${SCRIPT_DIR}/lib/core/process.sh"
+# shellcheck source=lib/core/session.sh
+source "${SCRIPT_DIR}/lib/core/session.sh"
+# shellcheck source=lib/core/preflight.sh
+source "${SCRIPT_DIR}/lib/core/preflight.sh"
+
+usage() {
+    cat <<'EOF'
+Usage: termux-de [OPTIONS] [COMMAND]
+
+Commands:
+  start              Start desktop session (default)
+  stop               Stop running session
+  status             Show session status
+  list               List available desktop environments
+  logs               List recent session logs
+
+Options:
+  --de=NAME          Desktop environment (default: last used, required)
+  --driver=NAME      GPU driver: auto|turnip|zink|virpipe (default: auto)
+  --software         Force software rendering (virpipe)
+  --daemon           Daemonize after launch
+  --dry-run          Show resolved config without launching
+  --tail             With 'logs': follow most recent log
+  --help             Show this help
+EOF
+}
+
+parse_args() {
+    while (( $# > 0 )); do
+        case "$1" in
+            --de=*)      CHOSEN_DE="${1#--de=}" ;;
+            --driver=*)  GPU_DRIVER="${1#--driver=}" ;;
+            --software)  GPU_DRIVER="virpipe" ;;
+            --daemon)    DAEMONIZE=true ;;
+            --dry-run)   DRY_RUN=true ;;
+            --tail)      LOGS_TAIL=true ;;
+            --help)      usage; exit 0 ;;
+            start|stop|status|list|logs)
+                         COMMAND="$1" ;;
+            -*)          die "Unknown option: $1. See 'termux-de --help'." ;;
+            *)           die "Unknown argument: $1. See 'termux-de --help'." ;;
+        esac
+        shift
+    done
+    COMMAND="${COMMAND:-start}"
+
+    if [[ -n "$CHOSEN_DE" ]] && [[ ! "$CHOSEN_DE" =~ ^[a-z0-9_-]+$ ]]; then
+        die "Invalid DE name: $CHOSEN_DE"
+    fi
+
+    if [[ -n "$GPU_DRIVER" ]] && [[ "$GPU_DRIVER" != "auto" ]] \
+            && [[ ! "$GPU_DRIVER" =~ ^(turnip|zink|virpipe)$ ]]; then
+        die "Invalid GPU driver: $GPU_DRIVER. Choose: auto, turnip, zink, virpipe"
+    fi
+}
+
+cmd_list() {
+    echo "Available desktop environments:"
+    for de_file in "${SCRIPT_DIR}"/lib/de/[!_]*.sh; do
+        [[ -f "$de_file" ]] || continue
+        local name="" label=""
+        name=$(sed -n 's/^DE_NAME="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$de_file" | head -1)
+        label=$(sed -n 's/^DE_LABEL="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$de_file" | head -1)
+        [[ -n "$name" ]] && printf "  %-12s %s\n" "$name" "$label"
+    done
+}
+
+cmd_dry_run() {
+    cat <<EOF
+=== termux-de dry-run ===
+DE:            ${CHOSEN_DE} (${DE_LABEL:-?})
+GPU driver:    ${GPU_DRIVER_NAME:-?}
+GPU server:    ${GPU_NEEDS_SERVER:-?}
+Display:       ${DISPLAY:-?}
+Compositor:    $([ "${DE_HAS_COMPOSITOR:-}" == "true" ] && echo "built-in" || echo "picom")
+Daemon mode:   ${DAEMONIZE}
+Config dir:    ${CONFIG_DIR}
+Log dir:       ${CONFIG_DIR}/logs
+
+GPU environment:
+$(env | grep -E '^(MESA_|GALLIUM_|ZINK_|TU_|VK_|QT_XCB|vblank)' | sort | sed 's/^/  /' || echo "  (none)")
+
+Session environment:
+  PULSE_SERVER=${PULSE_SERVER:-}
+  XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}
+  DISPLAY=${DISPLAY:-}
+EOF
+}
+
+main() {
+    parse_args "$@"
+    load_config
+
+    # Early exit commands (don't need full module loading)
+    case "$COMMAND" in
+        list)   cmd_list; exit 0 ;;
+        status) session_status; exit $? ;;
+        stop)   session_stop; exit $? ;;
+        logs)   cmd_logs; exit 0 ;;
+        start)  ;; # continue
+    esac
+
+    # Validate DE module exists
+    local de_file="${SCRIPT_DIR}/lib/de/${CHOSEN_DE}.sh"
+    [[ -f "$de_file" ]] || die "Unknown DE: ${CHOSEN_DE}. Run 'termux-de list'."
+
+    # Source display backend
+    # shellcheck source=lib/display/x11.sh
+    source "${SCRIPT_DIR}/lib/display/x11.sh"
+
+    # Source GPU modules and resolve driver
+    # shellcheck source=lib/gpu/base.sh
+    source "${SCRIPT_DIR}/lib/gpu/base.sh"
+    # shellcheck source=lib/gpu/detect.sh
+    source "${SCRIPT_DIR}/lib/gpu/detect.sh"
+    if [[ "$GPU_DRIVER" == "auto" || -z "$GPU_DRIVER" ]]; then
+        GPU_DRIVER=$(gpu_detect)
+    fi
+    local gpu_file="${SCRIPT_DIR}/lib/gpu/${GPU_DRIVER}.sh"
+    [[ -f "$gpu_file" ]] || die "GPU driver module not found: ${GPU_DRIVER}"
+    # shellcheck source=/dev/null
+    source "$gpu_file"
+
+    # Source remaining modules
+    # shellcheck source=lib/audio/pulseaudio.sh
+    source "${SCRIPT_DIR}/lib/audio/pulseaudio.sh"
+    # shellcheck source=lib/compositor/picom.sh
+    source "${SCRIPT_DIR}/lib/compositor/picom.sh"
+    # shellcheck source=/dev/null
+    source "$de_file"
+
+    # Dry run? (before preflight — show config even without all deps)
+    if [[ "$DRY_RUN" == "true" ]]; then
+        gpu_setup_base_env
+        gpu_setup_env
+        cmd_dry_run
+        exit 0
+    fi
+
+    # Preflight validation
+    preflight_check
+
+    # Session lock
+    session_acquire_lock
+
+    # Initialize logging (needs DE_NAME and GPU_DRIVER_NAME)
+    init_log
+
+    # Signal handlers
+    trap 'shutdown; exit 130' INT
+    trap 'shutdown; exit 143' TERM
+    trap 'shutdown; exit 129' HUP
+    trap 'shutdown' EXIT
+
+    # Pre-launch
+    cleanup_stale
+    session_init
+    save_last_de
+    display_check_app
+
+    # Launch sequence
+    audio_start
+    gpu_setup
+    display_start
+    display_wait_ready
+    gpu_validate
+
+    compositor_start
+
+    if declare -f de_env >/dev/null 2>&1; then
+        de_env
+    fi
+
+    de_start
+    log_info "Desktop environment started: ${DE_LABEL}"
+
+    # Foreground wait or daemonize
+    if [[ "$DAEMONIZE" == "true" ]]; then
+        log_info "Daemonized — use 'termux-de stop' to end session"
+        trap - EXIT INT TERM HUP
+        exit 0
+    fi
+
+    local de_pid="${MANAGED_PIDS[de]:-}"
+    if [[ -n "$de_pid" ]]; then
+        wait "$de_pid" 2>/dev/null || true
+    fi
+}
+
+main "$@"
