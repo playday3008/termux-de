@@ -41,8 +41,8 @@ Commands:
 
 Options:
   --de=NAME          Desktop environment (default: last used, required)
-  --driver=NAME      GPU driver: auto|turnip|zink|virpipe (default: auto)
-  --software         Force software rendering (virpipe)
+  --driver=NAME      GPU driver: auto|turnip|zink|virpipe|lavapipe (default: auto)
+  --software         Force CPU software rendering (lavapipe)
   --daemon           Daemonize after launch
   --dry-run          Show resolved config without launching
   --tail             With 'logs': follow most recent log
@@ -55,7 +55,7 @@ parse_args() {
         case "$1" in
             --de=*)      CHOSEN_DE="${1#--de=}" ;;
             --driver=*)  GPU_DRIVER="${1#--driver=}" ;;
-            --software)  GPU_DRIVER="virpipe" ;;
+            --software)  GPU_DRIVER="lavapipe" ;;
             --daemon)    DAEMONIZE=true ;;
             --dry-run)   DRY_RUN=true ;;
             --tail)      LOGS_TAIL=true ;;
@@ -74,8 +74,8 @@ parse_args() {
     fi
 
     if [[ -n "$GPU_DRIVER" ]] && [[ "$GPU_DRIVER" != "auto" ]] \
-            && [[ ! "$GPU_DRIVER" =~ ^(turnip|zink|virpipe)$ ]]; then
-        die "Invalid GPU driver: $GPU_DRIVER. Choose: auto, turnip, zink, virpipe"
+            && [[ ! "$GPU_DRIVER" =~ ^(turnip|zink|virpipe|lavapipe)$ ]]; then
+        die "Invalid GPU driver: $GPU_DRIVER. Choose: auto, turnip, zink, virpipe, lavapipe"
     fi
 }
 
