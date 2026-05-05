@@ -11,7 +11,7 @@ awesome, bspwm, fluxbox, fvwm, i3, icewm, jwm, lxqt, mate, openbox, plasma, xfce
 ```bash
 ./termux-de start                   # launch default DE
 ./termux-de start --de=plasma       # specific DE
-./termux-de start --software        # force software rendering
+./termux-de start --software        # force CPU software rendering
 ./termux-de start --driver=turnip   # force GPU driver
 ./termux-de start --daemon          # daemonize after launch
 ./termux-de list                    # available DEs
@@ -25,17 +25,18 @@ awesome, bspwm, fluxbox, fvwm, i3, icewm, jwm, lxqt, mate, openbox, plasma, xfce
 
 Auto-detected based on hardware:
 
-| GPU | Driver | Method |
-|-----|--------|--------|
-| Adreno | turnip | Native Vulkan |
-| Other HW Vulkan | zink | Vulkan-to-GL translation |
-| Fallback | virpipe | Software via virgl |
+| Driver | When | Method |
+|--------|------|--------|
+| turnip | Adreno GPU | Native Vulkan via freedreno |
+| zink | Mesa Vulkan ICD present | Vulkan-to-GL translation |
+| virpipe | Fallback | ANGLE-accelerated via virgl |
+| lavapipe | `--software` | CPU software via llvmpipe |
 
-Override with `--driver=<name>` or `--software`.
+Override with `--driver=<name>` or `--software` for CPU fallback.
 
 ## Architecture
 
-Thin orchestrator (~150 lines) sources modules from `lib/`:
+Thin orchestrator (~215 lines) sources modules from `lib/`:
 
 ```
 lib/core/       config, logging, process management, session, preflight
