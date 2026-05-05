@@ -41,8 +41,3 @@ display_wait_ready() {
 display_stop() {
     process_kill display
 }
-
-display_check_app() {
-    pm list packages 2>/dev/null | grep -q com.termux.x11 \
-        || log_warn "Termux:X11 app not installed — display may not be visible"
-}

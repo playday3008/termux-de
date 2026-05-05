@@ -181,7 +181,6 @@ main() {
     cleanup_stale
     session_init
     save_last_de
-    display_check_app
 
     # Launch sequence
     audio_start
